@@ -2,10 +2,12 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import {sha256} from 'js-sha256';
+//Some environment varaibles
 const DOMAIN='https://arcwiki.mcd.blue/';
 const INDEX=`${DOMAIN}index.php?`;
 const API=`${DOMAIN}api.php`;
 const CACHE_FOLDER='/tmp/jscache';
+//The definition of Informations, containing name (as wiki title), ratingClass, rating and notes
 class SongInfo{
 	name:string;
 	ratingClass:number;
@@ -14,13 +16,15 @@ class SongInfo{
 	notes:number|null=null;
 }
 const songInfo:SongInfo[]=[];
+//Mkdir if not exists
 if(!fs.existsSync(CACHE_FOLDER)){
 	await fs.promises.mkdir(CACHE_FOLDER,{recursive:true});
 	console.log(`Created directory ${CACHE_FOLDER}`);
 }
+//If fetch fails, retry at most twice
 async function fetchWithRetry(fn:()=>Promise<string>,retries=2):Promise<string>{
 	let lastError:any;
-	for(let attempt=0;attempt<=retries+1;attempt++){
+	for(let attempt=0;attempt <=retries+1;attempt++){
 		try{
 			return await fn();
 		}catch(error){
@@ -32,7 +36,8 @@ async function fetchWithRetry(fn:()=>Promise<string>,retries=2):Promise<string>{
 	}
 	throw lastError;
 }
-async function domainFetch(prefix,params):Promise<JSON>{
+//Fetch a specific json according to `prefix` and `params`
+async function jsonFetch(prefix,params):Promise<JSON>{
 	const sha=sha256.create().update(JSON.stringify([prefix,params])).hex();
 	const filename=path.join(CACHE_FOLDER,sha);
 	if(fs.existsSync(filename)){
@@ -58,16 +63,18 @@ async function domainFetch(prefix,params):Promise<JSON>{
 	});
 	return Promise.resolve(JSON.parse(contents));
 }
+//Wait for Songlist.json and Transision.json
 const [songlist,transition]=await Promise.all([
-	domainFetch(INDEX,{params:{
+	jsonFetch(INDEX,{params:{
 		title:'Template:Songlist.json',
 		action:'raw',
 	}}),
-	domainFetch(INDEX,{params:{
+	jsonFetch(INDEX,{params:{
 		title:'Template:Transition.json',
 		action:'raw',
 	}}),
 ]);
+//Parse name and rating info from songlist
 songlist['songs']?.forEach((song)=>{
 	if(song.deleted){
 		return;
@@ -103,6 +110,7 @@ songlist['songs']?.forEach((song)=>{
 		console.error(`Warning: ${song.id} have no valid difficulies`);
 	}
 });
+//`Last` is hard coded
 songInfo.push(
 	{name:'Last',ratingClass:0,rating:4,notes:680},
 	{name:'Last',ratingClass:1,rating:7,notes:781},
