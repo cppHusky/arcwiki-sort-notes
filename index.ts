@@ -8,15 +8,20 @@ const INDEX=`${DOMAIN}index.php?`;
 const API=`${DOMAIN}api.php`;
 const CACHE_FOLDER='/tmp/jscache';
 const RATE_LIMIT=20;
+const RATING_CLASS_MAP={
+	0:'Past',
+	1:'Present',
+	2:'Future',
+	3:'Beyond',
+	4:'Eternal',
+};
 //The definition of Informations, containing name (as wiki title), ratingClass, rating and notes
-type SongInfo={
-	[name:string]:{
+type SongInfo=Record<string,{
 		ratingClass:number;
 		rating:number;
 		ratingPlus?:boolean;
 		notes:number|null;
-	}[];
-}
+}[]>
 const songInfo:SongInfo={};
 //Mkdir if not exists
 if(!fs.existsSync(CACHE_FOLDER)){
@@ -157,11 +162,11 @@ class TaskQueue{
 			if(p){
 				TaskQueue.promises.push(p);
 			}
-			const pastNote=Number(content.match(/\|PastNote=(.*?)\|/s)?.[1].trim());
-			const presentNote=Number(content.match(/\|PresentNote=(.*?)\|/s)?.[1].trim());
-			const futureNote=Number(content.match(/\|FutureNote=(.*?)\|/s)?.[1].trim());
-			const beyondNote=Number(content.match(/\|BeyondNote=(.*?)\|/s)?.[1].trim());
-			const eternalNote=Number(content.match(/\|EternalNote=(.*?)\|/s)?.[1].trim());
+			const pastNote=Number(content.match(/\|PastNote=(.*?)[\|\}]/s)?.[1].trim());
+			const presentNote=Number(content.match(/\|PresentNote=(.*?)[\|\}]/s)?.[1].trim());
+			const futureNote=Number(content.match(/\|FutureNote=(.*?)[\|\}]/s)?.[1].trim());
+			const beyondNote=Number(content.match(/\|BeyondNote=(.*?)[\|\}]/s)?.[1].trim());
+			const eternalNote=Number(content.match(/\|EternalNote=(.*?)[\|\}]/s)?.[1].trim());
 			const ratingClassNotes=[pastNote,presentNote,futureNote,beyondNote,eternalNote];
 			ratingClassNotes.forEach((notes,i)=>{
 				if(Number.isNaN(notes))
@@ -231,4 +236,47 @@ for(const item of songItem){
 	}
 	groupMap.get(key)!.push(item);
 }
-console.log(groupMap);
+type ResultInfo=Record<string,{
+	ratingFull:string;
+	ratingClass:string;
+	notes:number;
+	max?:boolean;
+	min?:boolean;
+}[]>
+const resultInfo:ResultInfo={};
+groupMap.forEach((data,key)=>{
+	const first=data.at(0);
+	const last=data.at(-1);
+	if(!first||!last)
+		return;
+	if(!resultInfo[first.name]){
+		resultInfo[first.name]=[];
+	}
+	if(!resultInfo[last.name]){
+		resultInfo[last.name]=[];
+	}
+	if(first.name===last.name){
+		resultInfo[first.name].push({
+			ratingFull:`${first.rating}${first.ratingPlus?'+':''}`,
+			ratingClass:RATING_CLASS_MAP[first.ratingClass],
+			notes:first.notes,
+			min:true,
+			max:true
+		});
+	}
+	else{
+		resultInfo[first.name].push({
+			ratingFull:`${first.rating}${first.ratingPlus?'+':''}`,
+			ratingClass:RATING_CLASS_MAP[first.ratingClass],
+			notes:first.notes,
+			min:true,
+		});
+		resultInfo[last.name].push({
+			ratingFull:`${last.rating}${last.ratingPlus?'+':''}`,
+			ratingClass:RATING_CLASS_MAP[last.ratingClass],
+			notes:last.notes,
+			max:true,
+		});
+	}
+});
+console.log(resultInfo);
