@@ -7,15 +7,17 @@ const DOMAIN='https://arcwiki.mcd.blue/';
 const INDEX=`${DOMAIN}index.php?`;
 const API=`${DOMAIN}api.php`;
 const CACHE_FOLDER='/tmp/jscache';
+const RATE_LIMIT=20;
 //The definition of Informations, containing name (as wiki title), ratingClass, rating and notes
-class SongInfo{
-	name:string;
-	ratingClass:number;
-	rating:number;
-	ratingPlus?:boolean=false;
-	notes:number|null=null;
+type SongInfo={
+	[name:string]:{
+		ratingClass:number;
+		rating:number;
+		ratingPlus?:boolean;
+		notes:number|null;
+	}[];
 }
-const songInfo:SongInfo[]=[];
+const songInfo:SongInfo={};
 //Mkdir if not exists
 if(!fs.existsSync(CACHE_FOLDER)){
 	await fs.promises.mkdir(CACHE_FOLDER,{recursive:true});
@@ -36,35 +38,51 @@ async function fetchWithRetry(fn:()=>Promise<string>,retries=2):Promise<string>{
 	}
 	throw lastError;
 }
-//Fetch a specific json according to `prefix` and `params`
-async function jsonFetch(prefix,params):Promise<JSON>{
+//Common part of jsonFetch and pageFetch
+async function fetchCommon(prefix,params,fn:()=>Promise<string>):Promise<string>{
 	const sha=sha256.create().update(JSON.stringify([prefix,params])).hex();
 	const filename=path.join(CACHE_FOLDER,sha);
+	//Check cache in CACHE_FOLDER
 	if(fs.existsSync(filename)){
 		const stat=await fs.promises.stat(filename);
 		if(stat.size>0){
 			let contents:string=await fs.promises.readFile(filename,{encoding:'utf8'});
-			return Promise.resolve(JSON.parse(contents));
+			return Promise.resolve(contents);
 		}
 	}
 	console.log(`Lack of ${params.params.title} in ${CACHE_FOLDER}, fetching...`);
-	const contents:string=await fetchWithRetry(async()=>{
+	const contents:string=await fetchWithRetry(fn);
+	fs.writeFile(filename,contents,'utf8',(err)=>{
+		if(err)
+			throw err;
+		console.log(`Cached ${filename}`);
+	});
+	return Promise.resolve(contents);
+}
+//Fetch a specific json according to `prefix` and `params`
+async function jsonFetch(prefix,params):Promise<string>{
+	return fetchCommon(prefix,params,async()=>{
 		const response=await axios.get(prefix,params);
 		if(typeof response.data==='object'){
 			return JSON.stringify(response.data);
 		}else{
-			throw new Error(`response.data parsing failed: ${response}`);
+			throw new Error(`response.data of ${params.params.title} is incorrect: ${response}`);
 		};
 	});
-	fs.writeFile(filename,JSON.stringify(contents),'utf8',(err)=>{
-		if(err)
-			throw err;
-		console.log(`${filename} cached.`);
+}
+//Fetch a specific page according to `prefix` and `params`
+async function pageFetch(prefix,params):Promise<string>{
+	return fetchCommon(prefix,params,async()=>{
+		const response=await axios.get(prefix,params);
+		if(typeof response.data==='string'){
+			return response.data;
+		}else{
+			throw new Error(`response of ${params.params.title} is incorrect: ${response}`);
+		};
 	});
-	return Promise.resolve(JSON.parse(contents));
 }
 //Wait for Songlist.json and Transision.json
-const [songlist,transition]=await Promise.all([
+const [songlist,transition]=(await Promise.all([
 	jsonFetch(INDEX,{params:{
 		title:'Template:Songlist.json',
 		action:'raw',
@@ -73,9 +91,10 @@ const [songlist,transition]=await Promise.all([
 		title:'Template:Transition.json',
 		action:'raw',
 	}}),
-]);
+])).map(s=>JSON.parse(s));
 //Parse name and rating info from songlist
 songlist['songs']?.forEach((song)=>{
+	//particle arts is deleted
 	if(song.deleted){
 		return;
 	}
@@ -91,8 +110,12 @@ songlist['songs']?.forEach((song)=>{
 	if(transition['sameName']?.[name]){
 		name=transition['sameName'][name][song.id];
 	}
+	//`Last` will be hard coded
 	if(name==='Last'){
 		return;
+	}
+	if(!songInfo[name]){
+		songInfo[name]=[];
 	}
 	if(song.difficulties){
 		song.difficulties.forEach((diff)=>{
@@ -101,20 +124,111 @@ songlist['songs']?.forEach((song)=>{
 				return;
 			}
 			if(diff.ratingPlus){
-				songInfo.push({name:name,ratingClass:diff.ratingClass,rating:diff.rating,ratingPlus:diff.ratingPlus,notes:null});
+				songInfo[name].push({ratingClass:diff.ratingClass,rating:diff.rating,ratingPlus:diff.ratingPlus,notes:null});
 			}else{
-				songInfo.push({name:name,ratingClass:diff.ratingClass,rating:diff.rating,notes:null});
+				songInfo[name].push({ratingClass:diff.ratingClass,rating:diff.rating,notes:null});
 			}
 		});
 	}else{
 		console.error(`Warning: ${song.id} have no valid difficulies`);
 	}
 });
+//Concurrently fetching pages according to title
+class TaskQueue{
+	private title:string|null=null;
+	static id:number=0;
+	static songNames:string[]=Object.keys(songInfo);
+	static promises:Promise<void>[]=[];
+	constructor(){
+		if(TaskQueue.id <TaskQueue.songNames.length){
+			this.title=TaskQueue.songNames[TaskQueue.id];
+			TaskQueue.id++;
+		}
+	};
+	async run():Promise<void>{
+		if(this.title===null||this.title==='')
+			return;
+		try{
+			const content=await pageFetch(INDEX,{params:{
+				title:this.title,
+				action:'raw',
+			}});
+			const p=new TaskQueue().run();
+			if(p){
+				TaskQueue.promises.push(p);
+			}
+			const pastNote=Number(content.match(/\|PastNote=(.*?)\|/s)?.[1].trim());
+			const presentNote=Number(content.match(/\|PresentNote=(.*?)\|/s)?.[1].trim());
+			const futureNote=Number(content.match(/\|FutureNote=(.*?)\|/s)?.[1].trim());
+			const beyondNote=Number(content.match(/\|BeyondNote=(.*?)\|/s)?.[1].trim());
+			const eternalNote=Number(content.match(/\|EternalNote=(.*?)\|/s)?.[1].trim());
+			const ratingClassNotes=[pastNote,presentNote,futureNote,beyondNote,eternalNote];
+			ratingClassNotes.forEach((notes,i)=>{
+				if(Number.isNaN(notes))
+					return;
+				songInfo[this.title]?.forEach((piece)=>{
+					if(piece.ratingClass===i){
+						piece['notes']=notes;
+					}
+				});
+			});
+		}catch(err){
+			console.log(err);
+			const p=new TaskQueue().run();
+			if(p){
+				TaskQueue.promises.push(p);
+			}
+		}
+	}
+}
+for(let i=0;i <RATE_LIMIT;i++){
+	TaskQueue.promises.push(new TaskQueue().run());
+}
 //`Last` is hard coded
-songInfo.push(
-	{name:'Last',ratingClass:0,rating:4,notes:680},
-	{name:'Last',ratingClass:1,rating:7,notes:781},
-	{name:'Last',ratingClass:2,rating:9,notes:831},
-	{name:'Last',ratingClass:3,rating:9,notes:888},
-	{name:'Last',ratingClass:3,rating:9,ratingPlus:true,notes:790},
+songInfo['Last']=[
+	{ratingClass:0,rating:4,notes:680},
+	{ratingClass:1,rating:7,notes:781},
+	{ratingClass:2,rating:9,notes:831},
+	{ratingClass:3,rating:9,notes:888},
+	{ratingClass:3,rating:9,ratingPlus:true,notes:790},
+];
+type SongItem={
+	name:string;
+	ratingClass:number;
+	rating:number;
+	ratingPlus?:boolean;
+	notes:number|null;
+}
+while(TaskQueue.id <TaskQueue.songNames.length||TaskQueue.promises.length>0){
+	const first=TaskQueue.promises.shift();
+	await first;
+}
+const songItem:SongItem[]=Object.entries(songInfo).flatMap(([name,arr])=>
+	arr.map(({ratingClass,rating,ratingPlus,notes})=>({
+		name,ratingClass,rating,ratingPlus,notes
+	}))
 );
+songItem.sort((l,r)=>{
+	if(l.rating <r.rating)
+		return -1;
+	if(l.rating>r.rating)
+		return 1;
+	if(!l.ratingPlus&&r.ratingPlus)
+		return -1;
+	if(l.ratingPlus&&!r.ratingPlus)
+		return 1;
+	if(l.notes <r.notes)
+		return -1;
+	if(l.notes>r.notes)
+		return 1;
+	return 0;
+});
+const groupMap=new Map<string,SongItem[]>();
+for(const item of songItem){
+	const key=`${item.rating}${item.ratingPlus?'+':''}`;
+	if(!groupMap.has(key)){
+		groupMap.set(key,[]);
+	}
+	groupMap.get(key)!.push(item);
+}
+console.log(groupMap);
