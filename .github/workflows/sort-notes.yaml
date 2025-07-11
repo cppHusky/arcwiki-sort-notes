@@ -12,7 +12,7 @@ jobs:
       checks: write
     steps:
     - name: Checkout code
-      uses: actions/checkout@latest
+      uses: actions/checkout@v4
     - name: Set up environments
       run: |
         sudo apt update
