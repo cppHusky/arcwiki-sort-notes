@@ -21,5 +21,8 @@
     "@types/node": "^24.0.10",
     "axios": "^1.10.0",
     "js-sha256": "^0.11.1"
-  }
+  },
+	"devDependencies": {
+		"typescript": "^5.8.3"
+	}
 }

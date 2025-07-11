@@ -1,0 +1,25 @@
+name: Sort notes
+on:
+  push:
+    branches:
+      master
+  schedule:
+  - cron: '0 18 * * 4'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@latest
+    - name: Set up environments
+      run: |
+        sudo apt update
+        sudo apt install -y npm
+        npm i
+        npx tsc
+    - name: run index.js
+      run: node index.js
+      env:
+        ARCWIKI_PASS_SORT_NOTES: ${{ secrets.ARCWIKI_PASS_SORT_NOTES }}
