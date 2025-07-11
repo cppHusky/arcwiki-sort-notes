@@ -2,12 +2,14 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import {sha256} from 'js-sha256';
+import util from 'util';
 //Some environment varaibles
 const DOMAIN='https://arcwiki.mcd.blue/';
 const INDEX=`${DOMAIN}index.php?`;
 const API=`${DOMAIN}api.php`;
 const CACHE_FOLDER='/tmp/jscache';
 const RATE_LIMIT=20;
+//convert numbered ratingClass to string format
 const RATING_CLASS_MAP={
 	0:'Past',
 	1:'Present',
@@ -37,7 +39,7 @@ async function fetchWithRetry(fn:()=>Promise<string>,retries=2):Promise<string>{
 		}catch(error){
 			lastError=error;
 			if(attempt>retries){
-				throw new Error(`Failed after ${retries+1} attempts: ${error}`);
+				throw new Error(`Failed after ${retries+1} attempts: ${util.inspect(error)}`);
 			}
 		}
 	}
@@ -71,7 +73,7 @@ async function jsonFetch(prefix,params):Promise<string>{
 		if(typeof response.data==='object'){
 			return JSON.stringify(response.data);
 		}else{
-			throw new Error(`response.data of ${params.params.title} is incorrect: ${response}`);
+			throw new Error(`response.data of ${params.params.title} is incorrect: ${util.inspect(response)}`);
 		};
 	});
 }
@@ -82,7 +84,7 @@ async function pageFetch(prefix,params):Promise<string>{
 		if(typeof response.data==='string'){
 			return response.data;
 		}else{
-			throw new Error(`response of ${params.params.title} is incorrect: ${response}`);
+			throw new Error(`response of ${params.params.title} is incorrect: ${util.inspect(response)}`);
 		};
 	});
 }
@@ -186,6 +188,7 @@ class TaskQueue{
 		}
 	}
 }
+//Create `RATE_LIMIT` tasks, each one trigger another when complete recursively
 for(let i=0;i <RATE_LIMIT;i++){
 	TaskQueue.promises.push(new TaskQueue().run());
 }
@@ -197,6 +200,95 @@ songInfo['Last']=[
 	{ratingClass:3,rating:9,notes:888},
 	{ratingClass:3,rating:9,ratingPlus:true,notes:790},
 ];
+//Wait for all promises to finish
+while(TaskQueue.id <TaskQueue.songNames.length||TaskQueue.promises.length>0){
+	const first=TaskQueue.promises.shift();
+	await first;
+}
+//Interaction with arcwiki, from login to edit
+class ApiInteract{
+	private _cookie:string;
+	private _csrfToken:string;
+	async queryLoginToken():Promise<string>{
+		const request=await axios.get(API,{params:{
+			action:'query',
+			meta:'tokens',
+			type:'login',
+			format:'json',
+		}});
+		const loginToken=request.data?.query?.tokens?.logintoken;
+		if(!loginToken){
+			throw new Error(`Failed to get logintoken: ${util.inspect(request)}`);
+		}
+		this.cookie=request.headers['set-cookie'].join(';');
+		return loginToken;
+	}
+	async login():Promise<void>{
+		const request=await axios.post(API,new URLSearchParams({
+			action:'login',
+			lgname:'CppHusky@sort-notes',
+			lgpassword:process.env.ARCWIKI_PASS_SORT_NOTES,
+			lgtoken:await this.queryLoginToken(),
+			format:'json',
+		}).toString(),{headers:{Cookie:this.cookie}});
+		const loginResult=request?.data?.login?.result;
+		if(request.data.login.result!=='Success'){
+			throw new Error(`Failed to login: ${util.inspect(request)}`);
+		}
+		this.cookie=request.headers['set-cookie'].join(';');
+		return;
+	}
+	async queryCsrfToken(){
+		const request=await axios.get(API,{
+			params:{
+				action:'query',
+				meta:'tokens',
+				type:'csrf',
+				format:'json',
+			},
+			headers:{Cookie:this.cookie},
+		});
+		const csrfToken=request.data?.query?.tokens?.csrftoken;
+		if(!csrfToken){
+			throw new Error(`Failed to get csrftoken: ${util.inspect(request)}`);
+		}
+		return this.token=csrfToken;
+	}
+	async push(json:string){
+		const request=await axios.post(API,new URLSearchParams({
+			action:'edit',
+			title:'用户:CppHusky/extremeValues.json',
+			bot:'true',
+			text:json,
+			token:this.token,
+			contentformat:'application/json',
+			watchlist:'preferences',
+			format:'json',
+		}).toString(),{headers:{Cookie:this.cookie}});
+		const result=request.data?.edit?.result;
+		if(result!=='Success')
+			throw new Error(`Failed to edit: ${util.inspect(request)}`);
+		return;
+	}
+	get cookie(){
+		return this._cookie;
+	}
+	set cookie(cookie:string){
+		this._cookie=cookie;
+	}
+	get token(){
+		return this._csrfToken;
+	}
+	set token(token:string){
+		this._csrfToken=token;
+	}
+}
+//Asynchronously login and fetch csrfToken
+const apiInteract=new ApiInteract();
+const apipromise=apiInteract.login().then(async (_)=>{
+	await apiInteract.queryCsrfToken();
+});
+//The definition of piece of items, will sort then
 type SongItem={
 	name:string;
 	ratingClass:number;
@@ -204,15 +296,13 @@ type SongItem={
 	ratingPlus?:boolean;
 	notes:number|null;
 }
-while(TaskQueue.id <TaskQueue.songNames.length||TaskQueue.promises.length>0){
-	const first=TaskQueue.promises.shift();
-	await first;
-}
+//Flatten songInfo to songItem
 const songItem:SongItem[]=Object.entries(songInfo).flatMap(([name,arr])=>
 	arr.map(({ratingClass,rating,ratingPlus,notes})=>({
 		name,ratingClass,rating,ratingPlus,notes
 	}))
 );
+//Sort them ascending by rating and notes
 songItem.sort((l,r)=>{
 	if(l.rating <r.rating)
 		return -1;
@@ -228,6 +318,7 @@ songItem.sort((l,r)=>{
 		return 1;
 	return 0;
 });
+//groupMap will group songItems by rating
 const groupMap=new Map<string,SongItem[]>();
 for(const item of songItem){
 	const key=`${item.rating}${item.ratingPlus?'+':''}`;
@@ -236,27 +327,28 @@ for(const item of songItem){
 	}
 	groupMap.get(key)!.push(item);
 }
-type ResultInfo=Record<string,{
+//extremeValues is a "name to info" record
+type ExtremeValues=Record<string,{
 	ratingFull:string;
 	ratingClass:string;
 	notes:number;
 	max?:boolean;
 	min?:boolean;
 }[]>
-const resultInfo:ResultInfo={};
+const extremeValues:ExtremeValues={};
 groupMap.forEach((data,key)=>{
 	const first=data.at(0);
 	const last=data.at(-1);
 	if(!first||!last)
 		return;
-	if(!resultInfo[first.name]){
-		resultInfo[first.name]=[];
+	if(!extremeValues[first.name]){
+		extremeValues[first.name]=[];
 	}
-	if(!resultInfo[last.name]){
-		resultInfo[last.name]=[];
+	if(!extremeValues[last.name]){
+		extremeValues[last.name]=[];
 	}
 	if(first.name===last.name){
-		resultInfo[first.name].push({
+		extremeValues[first.name].push({
 			ratingFull:`${first.rating}${first.ratingPlus?'+':''}`,
 			ratingClass:RATING_CLASS_MAP[first.ratingClass],
 			notes:first.notes,
@@ -265,13 +357,13 @@ groupMap.forEach((data,key)=>{
 		});
 	}
 	else{
-		resultInfo[first.name].push({
+		extremeValues[first.name].push({
 			ratingFull:`${first.rating}${first.ratingPlus?'+':''}`,
 			ratingClass:RATING_CLASS_MAP[first.ratingClass],
 			notes:first.notes,
 			min:true,
 		});
-		resultInfo[last.name].push({
+		extremeValues[last.name].push({
 			ratingFull:`${last.rating}${last.ratingPlus?'+':''}`,
 			ratingClass:RATING_CLASS_MAP[last.ratingClass],
 			notes:last.notes,
@@ -279,4 +371,6 @@ groupMap.forEach((data,key)=>{
 		});
 	}
 });
-console.log(resultInfo);
+//After getting csrfToken, push extremeValues to 用户:CppHusky/extremeValues.json
+await apipromise;
+apiInteract.push(JSON.stringify(extremeValues));
