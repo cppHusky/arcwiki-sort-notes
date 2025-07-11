@@ -4,7 +4,7 @@ on:
     branches:
       master
   schedule:
-  - cron: '0 18 * * 4'
+  - cron: '0 8 * * 4'
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -13,10 +13,12 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    - name: Set up environments
+    - name: Set up node
+      uses: actions/setup-node@v4
+      with:
+        node-version: 'latest'
+    - name: Set up repository and Compile
       run: |
-        sudo apt update
-        sudo apt install -y npm
         npm i
         npx tsc
     - name: run index.js
