@@ -9,12 +9,12 @@
 Build:
 
 ```
-npm i @types/node axios js-sha256
-tsc
+$ npm i @types/node axios js-sha256
+$ tsc
 ```
 
 Run:
 
 ```
-node index.js
+$ node index.js
 ```
