@@ -4,7 +4,7 @@ import path from 'path';
 import {sha256} from 'js-sha256';
 import util from 'util';
 //Some environment varaibles
-const DOMAIN='https://arcwiki.mcd.blue/';
+const DOMAIN='https://wiki.arcaea.cn/';
 const INDEX=`${DOMAIN}index.php?`;
 const API=`${DOMAIN}api.php`;
 const CACHE_FOLDER='/tmp/jscache';
